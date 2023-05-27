@@ -1,61 +1,107 @@
 import { setKey } from "../controllers/redis-controllers";
 import executeFile from "./executeFile";
-import createFile from "./generateFile";
+import { createFile } from "./generateFile";
 
-async function processJob(job: any) {
-  console.log(`[worker] Processing ${job.folder_name}`);
-
-  // *** Create code and input files *** //
-  try {
-    createFile(job);
-  } catch (err) {
-    setKey(job.folder_name, `{"stderr":"Internal Server Error","stdout":""}`);
-    console.log(
-      `Error while creating files, JobId: ${job.folder_name}, Error: ${err}`
-    );
+function checkForInternalErrors(err: any) {
+  if (err.error instanceof RangeError) {
+    return "Runtime Error: Buffer Exceeded"
+  } else if (err.error.signal == "SIGTERM") {
+    return "TLE"
   }
+}
 
-  // *** Execute the generated file *** //
-  // *** This output returns a promise :-
-  //     It is only resolved on a successful and correct code exection.
-  //     It is rejected in case there user submits an incorrect/buggy code.
-  //     It is also rejected in case of any Internal Server Issue (Like python not installed) *** //
-  let output: any = { stderr: "", stdout: "Done" };
+export async function processJob(job: any) {
+  createFile(job);
+  return await executeFile(job);
+}
+
+export async function processClassicJob(job: any) {
+  console.log(`[worker] Processing Classic Job - ${job.folder_name}`);
+  let output: any;
   try {
-    output = await executeFile(job);
-    // *** If is it correctly resolved, output contains the output of the code *** //
+    output = await processJob(job);
   } catch (err: any) {
-    // *** In case it is rejected, we check if it is because of an incorrect code submission *** //
     if (err.stderr) {
       output = err;
     } else {
-      // *** We have to check if the length of output exceeds the max. buffer length, we'll use spawn later for infinite buffer length. *** //
-      if (err.error instanceof RangeError) {
+      const internalError = checkForInternalErrors(err);
+      if (internalError === "TLE") {
         output = {
-          stderr: "Your Output is too long.!!",
+          stderr: "Your code took too long to execute.",
           stdout: "",
         };
-      } else if (err.error.signal == "SIGTERM") {
-        // *** If its timeout error, return Your Code took too long to execute *** //
+      } else if (internalError === "Runtime Error: Buffer Exceeded") {
         output = {
-          stderr: "Your code took too long to execute.!!",
+          stderr: "Your Output is too long.",
           stdout: "",
         };
-      } else {
-        // *** Catch any other internal server error *** //
-        console.log(`Error while file execution: ${err.error}`);
+      }
+      else {
+        console.log(`Error while job execution: ${job.folder_name}, ${err.error}`);
         output = {
-          stderr:
-            "Internal Server Error, maybe the required language isn't installed on the server",
+          stderr: "Internal Server Error",
           stdout: "",
         };
       }
     }
-  } finally {
-    output = JSON.stringify(output);
-    setKey(job.folder_name, output);
-    // fs.writeFileSync(`./temp/${job.folder_name}/output.txt`, output);
   }
+  setKey(job.folder_name, JSON.stringify(output));
 }
 
-export default processJob;
+export async function processJudgeJob(job: any) {
+  console.log(`[worker] Processing Judge Job - ${job.folder_name}`);
+
+  const testInputs = job.test_inputs;
+
+  const results = testInputs.map(async (testInput: any, index: number) => {
+    const userCodeJobData = {
+      folder_name: `${job.folder_name}/${index.toString()}/usercode`,
+      language: job.input_code.language,
+      code: job.input_code.code,
+      input: testInput.toString(),
+      timeout: job.timeout
+    }
+
+    const solutionJobData = {
+      folder_name: `${job.folder_name}/${index.toString()}/solution`,
+      language: job.solution.language,
+      code: job.solution.code.replace(/\\n/g, '\n'),
+      input: testInput.toString(),
+      timeout: job.timeout
+    }
+
+    let solutionOutput: any;
+    let userCodeOutput: any;
+    try {
+      userCodeOutput = await processJob(userCodeJobData);
+      solutionOutput = await processJob(solutionJobData);
+      if (solutionOutput.stdout === userCodeOutput.stdout) {
+        return "Success";
+      } else {
+        return "Wrong Answer"
+      }
+    } catch (err: any) {
+      if (err.stderr) {
+        return "Runtime Error"
+      } else {
+        const internalError = checkForInternalErrors(err);
+        if (internalError === "TLE") {
+          return "TLE"
+        } else if (internalError === "Runtime Error: Buffer Exceeded") {
+          return "TLE"
+        } else {
+          console.log(`Error while job execution: ${job.folder_name}, ${err.error}`);
+          return "500"
+        }
+      }
+    }
+  });
+
+  setKey(job.folder_name, JSON.stringify(await Promise.all(results)));
+}
+
+// *** Execute the generated file *** //
+  // *** This output returns a promise :-
+  //     It is only resolved on a successful and correct code exection.
+  //     It is rejected in case there user submits an incorrect/buggy code.
+  //     It is also rejected in case of any Internal Server Issue (Like python not installed) *** //

@@ -1,5 +1,5 @@
 import connectQueue from "../config/rabbitmq";
-import processJob from "../utils/jobProcessing";
+import { processClassicJob, processJudgeJob } from "../utils/jobProcessing";
 import { setKey } from "./redis-controllers";
 
 const startListening = async () => {
@@ -9,16 +9,28 @@ const startListening = async () => {
       channel = await connectQueue();
     }
 
-
     console.log("[worker] Listening for requests");
+    
     // *** Start Processing Jobs *** //
-    channel.consume("jobs", async (data: any) => {
+    channel.consume("singleExecutionJobs", async (data: any) => {
       channel.ack(data); // Acknowledge (delete) job from queue
       const job = JSON.parse(data.content.toString());
       await setKey(job.folder_name, "Processing");
 
       try {
-        await processJob(job);
+        await processClassicJob(job);
+      } catch (err) {
+        console.log(`Error while Processing Job: ${err}`);
+      }
+    });
+
+    channel.consume("multiExecutionJobs", async (data: any) => {
+      channel.ack(data); // Acknowledge (delete) job from queue
+      const job = JSON.parse(data.content.toString());
+      await setKey(job.folder_name, "Processing");
+
+      try {
+        await processJudgeJob(job);
       } catch (err) {
         console.log(`Error while Processing Job: ${err}`);
       }
