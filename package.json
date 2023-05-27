@@ -8,6 +8,13 @@
     "dev": "nodemon app.ts"
   },
   "dependencies": {
+    "@types/amqplib": "^0.10.1",
+    "@types/node": "^18.15.11",
+    "amqplib": "^0.10.3",
+    "child_process": "^1.0.2",
+    "dotenv": "^16.0.3",
+    "fs": "^0.0.1-security",
+    "ioredis": "^5.3.2",
     "nodemon": "^2.0.22"
   }
 }
